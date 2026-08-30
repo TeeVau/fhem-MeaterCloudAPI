@@ -28,6 +28,7 @@ ersetzen und die ausgefüllten Befehle nicht veröffentlichen:
 
 ## HTTPMOD-Device
 
+```text
 defmod MeaterCloud HTTPMOD https://public-api.cloud.meater.com/v1/devices/DEVICE_ID 60
 attr MeaterCloud enableControlSet 1
 attr MeaterCloud enforceGoodReadingNames 1
@@ -101,7 +102,11 @@ sub myMeaterCloudUpdateReadings($) {
   return 0 if (!$hash);
 
   my $cookState = ReadingsVal($name, "cookState", "");
-  my $cookActive = $cookState =~ /^(Started|Ready For Resting|Resting|OVERCOOK!)$/ ? 1 : 0;
+  my $elapsedSeconds = ReadingsVal($name, "elapsedSeconds", "");
+  my $cookActive = (
+    $cookState =~ /^(Started|Ready For Resting|Resting|OVERCOOK!)$/
+      || ($cookState eq "Configured" && $elapsedSeconds =~ /^\d+$/ && $elapsedSeconds > 0)
+  ) ? 1 : 0;
 
   my %stateDE = (
     "Not Started"        => "nicht gestartet",
@@ -116,6 +121,7 @@ sub myMeaterCloudUpdateReadings($) {
   );
   my $cookStateDE = $stateDE{$cookState}
     // ($cookState ne "" ? $cookState : "kein Garvorgang");
+  $cookStateDE = "läuft" if ($cookState eq "Configured" && $cookActive);
 
   my $updatedAt = ReadingsNum($name, "updatedAt", 0);
   my $dataAge = $updatedAt ? int(time() - $updatedAt) : -1;
@@ -150,7 +156,6 @@ sub myMeaterCloudUpdateReadings($) {
     }
   }
 
-  my $elapsedSeconds = ReadingsVal($name, "elapsedSeconds", "");
   my $cookStartedAt = $updatedAt && $elapsedSeconds ne ""
     ? strftime("%Y-%m-%d %H:%M:%S", localtime($updatedAt - $elapsedSeconds))
     : "";
@@ -175,6 +180,12 @@ sub myMeaterCloudStateFormat($) {
   my $dataAge = $updatedAt ? int(time() - $updatedAt) : -1;
   $dataAge = 0 if ($dataAge < 0);
   $cloudState = "stale" if ($cloudState eq "online" && $dataAge > 180);
+  my $cookActive = ReadingsNum($name, "cookActive", 0);
+
+  if ($cloudState eq "stale" && !$cookActive) {
+    return "MEATER Pro – kein Garvorgang<br/>"
+      . "Fühler nicht verbunden · letzte Cloud-Daten vor $dataAge s";
+  }
 
   my $cloudLine = "Cloud: $cloudState · Datenalter: "
     . ($dataAge >= 0 ? "$dataAge s" : "unbekannt");
@@ -215,7 +226,19 @@ sub myMeaterCloudCheckEvents($$) {
   return if (!$defs{$name} || !$eventHash);
 
   my $cookId = ReadingsVal($name, "cookId", "");
-  return if ($cookId eq "");
+  if ($cookId eq "") {
+    my $lastCookId = ReadingsVal($eventName, "lastActiveCookId", "");
+    return if ($lastCookId eq "");
+
+    my $lastCookName = ReadingsVal($eventName, "lastActiveCookName", "Garvorgang");
+    if (ReadingsVal($eventName, "finishedCookId", "") ne $lastCookId) {
+      Log3 $name, 3, "MEATER Cloud: $lastCookName: Garvorgang beendet";
+      readingsSingleUpdate($eventHash, "finishedCookId", $lastCookId, 0);
+    }
+    readingsSingleUpdate($eventHash, "lastActiveCookId", "", 0);
+    readingsSingleUpdate($eventHash, "lastActiveCookName", "", 0);
+    return;
+  }
 
   my $cookName = ReadingsVal($name, "cookName", "Garvorgang");
   my $cookState = ReadingsVal($name, "cookState", "");
@@ -224,9 +247,14 @@ sub myMeaterCloudCheckEvents($$) {
   my $dataAge = $updatedAt ? int(time() - $updatedAt) : -1;
   my $cookActive = ReadingsNum($name, "cookActive", 0);
 
+  if ($cookActive) {
+    readingsSingleUpdate($eventHash, "lastActiveCookId", $cookId, 0);
+    readingsSingleUpdate($eventHash, "lastActiveCookName", $cookName, 0);
+  }
+
   my @events = (
     ["targetWarnCookId",
-      $cookState eq "Started"
+      $cookActive
         && $targetDelta =~ /^-?\d+(?:\.\d+)?$/
         && $targetDelta > 0 && $targetDelta <= 5,
       "$cookName: Zieltemperatur fast erreicht ($targetDelta °C verbleibend)"],
@@ -276,6 +304,7 @@ höchstens einmal pro `cookId` im FHEM-Log:
 defmod doif_MeaterCloudEvents DOIF ([MeaterCloud:updatedAt] or [+:01]) ({myMeaterCloudCheckEvents("MeaterCloud","doif_MeaterCloudEvents")})
 attr doif_MeaterCloudEvents do always
 attr doif_MeaterCloudEvents DbLogExclude .*
+```
 
 ## Erwartetes Verhalten
 
@@ -283,8 +312,12 @@ attr doif_MeaterCloudEvents DbLogExclude .*
 - `dataAge` zeigt das Alter der Cloud-Daten in Sekunden.
 - `targetDelta` zeigt die noch fehlenden Grad bis zur Zieltemperatur.
 - Eine negative Restzeit wird als `wird berechnet` dargestellt.
-- Bei Daten, die älter als 180 Sekunden sind, kennzeichnet `stateFormat` die
-  Anzeige mit einer rot hinterlegten Warnbox deutlich als veraltet.
+- Meldet die Beta-API bei laufender Zeit weiterhin `Configured`, wird der
+  Garvorgang über `elapsedSeconds > 0` trotzdem als aktiv erkannt.
+- Bei einem aktiven Garvorgang kennzeichnet `stateFormat` Daten, die älter als
+  180 Sekunden sind, mit einer roten Warnbox.
+- Ohne aktiven Garvorgang erscheint bei alten Daten stattdessen neutral
+  `Fühler nicht verbunden`; die veralteten Temperaturen werden ausgeblendet.
 - Nach Ende eines Garvorgangs führt das normale Verschwinden der Cook-Readings
   nicht zu einer Störungsmeldung.
 
