@@ -178,7 +178,12 @@ sub myMeaterCloudStateFormat($) {
 
   my $cloudLine = "Cloud: $cloudState · Datenalter: "
     . ($dataAge >= 0 ? "$dataAge s" : "unbekannt");
-  $cloudLine = "ACHTUNG: Daten veraltet · $cloudLine" if ($cloudState eq "stale");
+  if ($cloudState eq "stale") {
+    $cloudLine = '<span style="display:inline-block; margin-top:4px; '
+      . 'padding:4px 7px; border:2px solid #d00000; border-radius:4px; '
+      . 'background:#ffe5e5; color:#b00000; font-weight:bold;">'
+      . "⚠ DATEN VERALTET · Cloud: stale · Datenalter: $dataAge s</span>";
+  }
 
   my $cookName = ReadingsVal($name, "cookName", "");
   my $cookStateDE = ReadingsVal($name, "cookStateDE", "kein Garvorgang");
@@ -279,7 +284,7 @@ attr doif_MeaterCloudEvents DbLogExclude .*
 - `targetDelta` zeigt die noch fehlenden Grad bis zur Zieltemperatur.
 - Eine negative Restzeit wird als `wird berechnet` dargestellt.
 - Bei Daten, die älter als 180 Sekunden sind, kennzeichnet `stateFormat` die
-  Anzeige deutlich als veraltet.
+  Anzeige mit einer rot hinterlegten Warnbox deutlich als veraltet.
 - Nach Ende eines Garvorgangs führt das normale Verschwinden der Cook-Readings
   nicht zu einer Störungsmeldung.
 
