@@ -1,5 +1,7 @@
 # MEATER Cloud API for FHEM
 
+![MEATER Cloud API for FHEM](assets/github-social-preview.png)
+
 [![Release](https://img.shields.io/github/v/release/TeeVau/fhem-MeaterCloudAPI)](https://github.com/TeeVau/fhem-MeaterCloudAPI/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
