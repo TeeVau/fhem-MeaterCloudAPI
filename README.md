@@ -1,32 +1,67 @@
-# MEATER Cloud API in FHEM
+# MEATER Cloud API for FHEM
 
-Bindet einen MEATER Pro über die öffentliche MEATER Cloud API in FHEM ein.
-Die Lösung verwendet ausschließlich `HTTPMOD` und einige kleine Funktionen in
-`99_myUtils.pm`. Sie liest Temperaturen und den aktuellen Garvorgang, zeigt die
-wichtigsten Werte direkt am Device und schreibt ausgewählte Ereignisse ins
-FHEM-Log. 
+[![Release](https://img.shields.io/github/v/release/TeeVau/fhem-MeaterCloudAPI)](https://github.com/TeeVau/fhem-MeaterCloudAPI/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Reproduzierbare FHEM-Integration eines einzelnen MEATER Pro über die öffentliche
+MEATER Cloud REST API. Die Implementierung bleibt vollständig innerhalb von
+FHEM: `HTTPMOD` übernimmt Login und Polling, drei Funktionen in
+`99_myUtils.pm` bereiten die Daten auf und ein kompaktes `DOIF` erkennt
+Ereignisse.
+
+Der Stand `v0.1.0` ist für erfahrene FHEM-Anwender und Maker gedacht. Es gibt
+keinen Installer und kein eigenes FHEM-Modul. Die Konfiguration wird bewusst
+manuell übernommen und an die lokale Installation angepasst.
+
+## Eigenschaften
+
+- JWT-Login über HTTPMOD mit lokalem FHEM-Key-Value-Speicher
+- direkter Abruf eines einzelnen Geräts im 60-Sekunden-Intervall
+- explizite JSON-Pfade statt dauerhaftem `extractAllJSON`
+- kompakte mehrzeilige Anzeige über `stateFormat`
+- sichere Kennzeichnung veralteter Cloud-Daten
+- neutrale Anzeige ohne alte Temperaturen bei getrenntem, inaktivem Fühler
+- einmalige Logereignisse pro Cook-ID
+- vollständiger Ausschluss aus DbLog
+- keine Steuerung des MEATER, Grills oder Ofens
+- keine externen Bridges, MQTT-Dienste oder blockierenden HTTP-Aufrufe
+
+## Status und Grenzen
+
+Die öffentliche MEATER-API ist als Beta gekennzeichnet. API-Zustände und
+Cook-Lebenszyklus können von der App-Darstellung abweichen. Im Live-Test blieb
+ein gestarteter Cook beispielsweise im API-State `Configured`; die laufende
+Zeit in `elapsedSeconds` war deshalb das belastbare Startsignal.
+
+`v0.1.0` unterstützt genau einen MEATER Pro. Mehrere Fühler, historische Cooks,
+Plots, TTS, Alexa und Pushover gehören nicht zum Umfang dieses Releases.
 
 ## Voraussetzungen
 
-- FHEM mit `HTTPMOD`
-- MEATER-Konto und ein dort sichtbarer MEATER Pro
-- bekannte Geräte-ID aus der Antwort von `GET /devices`
+- FHEM mit `HTTPMOD` und `DOIF`
+- ein MEATER-Cloud-Konto
+- ein in der Cloud sichtbarer MEATER Pro
+- die Geräte-ID aus `GET /v1/devices`
 - eine vorhandene `99_myUtils.pm`
 - `use POSIX qw(strftime);` in `99_myUtils.pm`
 
-## Zugangsdaten lokal hinterlegen
+## Installation
 
-E-Mail-Adresse und Passwort werden ausschließlich im lokalen FHEM-Key-Value-
-Speicher abgelegt. Die Platzhalter nur direkt in der eigenen FHEM-Installation
-ersetzen und die ausgefüllten Befehle nicht veröffentlichen:
+### 1. Zugangsdaten lokal speichern
+
+Die Befehle ausschließlich in der eigenen FHEM-Instanz ausführen. Ausgefüllte
+Befehle, JWTs, Geräte-IDs und Cook-IDs gehören weder in Git noch in Support-
+Ausgaben.
 
 ```text
 {storeKeyValue("meater_email","MEATER_EMAIL")}
 {storeKeyValue("meater_password","MEATER_PASSWORD")}
 ```
 
+Die Geräte-ID wird absichtlich nicht über `storeKeyValue` verwaltet. Sie wird
+direkt in der HTTPMOD-URL anstelle von `DEVICE_ID` eingesetzt.
 
-## HTTPMOD-Device
+### 2. HTTPMOD anlegen
 
 ```text
 defmod MeaterCloud HTTPMOD https://public-api.cloud.meater.com/v1/devices/DEVICE_ID 60
@@ -47,11 +82,16 @@ attr MeaterCloud replacement02Regex %%meater_password%%
 attr MeaterCloud replacement02Mode key
 attr MeaterCloud replacement02Value meater_password
 attr MeaterCloud DbLogExclude .*
-attr MeaterCloud room Küche
 ```
 
-## Definierte Readings
+Das Intervall von 60 Sekunden bleibt unter der offiziellen Empfehlung von
+höchstens zwei Anfragen pro 60 Sekunden. `room`, `alias` und weitere reine
+Darstellungsattribute bleiben installationsspezifisch.
 
+### 3. Direkte Readings definieren
+
+`extractAllJSON` wird nicht benötigt. Cook-Readings werden entfernt, sobald die
+API keinen Cook-Block mehr liefert.
 
 ```text
 attr MeaterCloud reading01JSON data_id
@@ -89,13 +129,15 @@ attr MeaterCloud reading13JSON statusCode
 attr MeaterCloud reading13Name apiStatusCode
 ```
 
-## myUtils-Funktionen
+### 4. myUtils-Funktionen ergänzen
 
-Die drei Funktionen in `99_myUtils.pm` einfügen. `strftime` muss dort über
-`use POSIX qw(strftime);` verfügbar sein.
+Die folgenden drei Funktionen in `99_myUtils.pm` einfügen. `strftime` muss über
+`use POSIX qw(strftime);` importiert sein.
+
+<details>
+<summary><code>myMeaterCloudUpdateReadings</code></summary>
 
 ```perl
-# Berechnet die abgeleiteten MEATER-Readings innerhalb des HTTPMOD-Updatezyklus.
 sub myMeaterCloudUpdateReadings($) {
   my ($name) = @_;
   my $hash = $defs{$name};
@@ -170,8 +212,14 @@ sub myMeaterCloudUpdateReadings($) {
 
   return $cookActive;
 }
+```
 
-# Baut die kompakte mehrzeilige Anzeige für das MEATER-HTTPMOD-Device.
+</details>
+
+<details>
+<summary><code>myMeaterCloudStateFormat</code></summary>
+
+```perl
 sub myMeaterCloudStateFormat($) {
   my ($name) = @_;
 
@@ -218,8 +266,14 @@ sub myMeaterCloudStateFormat($) {
     . "Kern: $internal °C · Garraum: $ambient °C<br/>"
     . $cloudLine;
 }
+```
 
-# Protokolliert definierte MEATER-Ereignisse höchstens einmal je Garvorgang.
+</details>
+
+<details>
+<summary><code>myMeaterCloudCheckEvents</code></summary>
+
+```perl
 sub myMeaterCloudCheckEvents($$) {
   my ($name, $eventName) = @_;
   my $eventHash = $defs{$eventName};
@@ -281,24 +335,21 @@ sub myMeaterCloudCheckEvents($$) {
 }
 ```
 
-## FHEM-Attribute
+</details>
+
+### 5. Funktionen aktivieren
 
 ```text
 attr MeaterCloud userReadings cookActive {myMeaterCloudUpdateReadings($name)}
 attr MeaterCloud stateFormat {myMeaterCloudStateFormat($name)}
+reload 99_myUtils.pm
 ```
 
-## Ereignisprotokoll
+### 6. Ereignisprüfung anlegen
 
-Der DOIF-Aufruf bleibt bewusst kurz. Er prüft bei neuen Cloud-Daten und
-zusätzlich jede Minute. Die Funktion protokolliert die folgenden Ereignisse
-höchstens einmal pro `cookId` im FHEM-Log:
-
-- höchstens 5 °C bis zur Zieltemperatur
-- bereit zum Ruhen
-- Garvorgang beendet
-- übergart
-- Cloud-Daten während eines aktiven Garvorgangs älter als 180 Sekunden
+Der ausgerichtete Minutentimer erkennt ausbleibende Cloud-Updates auch dann,
+wenn kein neues HTTPMOD-Event eintrifft. Die Funktion sperrt jede Meldungsart
+über die aktuelle Cook-ID gegen Wiederholungen.
 
 ```text
 defmod doif_MeaterCloudEvents DOIF ([MeaterCloud:updatedAt] or [+:01]) ({myMeaterCloudCheckEvents("MeaterCloud","doif_MeaterCloudEvents")})
@@ -306,24 +357,87 @@ attr doif_MeaterCloudEvents do always
 attr doif_MeaterCloudEvents DbLogExclude .*
 ```
 
-## Erwartetes Verhalten
+Nach erfolgreicher Prüfung:
 
-- `cloudState` ist bei einer erfolgreichen Antwort `online`.
-- `dataAge` zeigt das Alter der Cloud-Daten in Sekunden.
-- `targetDelta` zeigt die noch fehlenden Grad bis zur Zieltemperatur.
-- Eine negative Restzeit wird als `wird berechnet` dargestellt.
-- Meldet die Beta-API bei laufender Zeit weiterhin `Configured`, wird der
-  Garvorgang über `elapsedSeconds > 0` trotzdem als aktiv erkannt.
-- Bei einem aktiven Garvorgang kennzeichnet `stateFormat` Daten, die älter als
-  180 Sekunden sind, mit einer roten Warnbox.
-- Ohne aktiven Garvorgang erscheint bei alten Daten stattdessen neutral
-  `Fühler nicht verbunden`; die veralteten Temperaturen werden ausgeblendet.
-- Nach Ende eines Garvorgangs führt das normale Verschwinden der Cook-Readings
-  nicht zu einer Störungsmeldung.
+```text
+save
+```
 
+## Reading-Modell
+
+| Gruppe | Readings |
+| --- | --- |
+| Gerät | `deviceId`, `internalTemperature`, `ambientTemperature`, `updatedAt` |
+| Cook | `cookId`, `cookName`, `cookState`, `targetTemperature`, `peakTemperature`, `elapsedSeconds`, `remainingSeconds` |
+| API | `apiStatus`, `apiStatusCode` |
+| Abgeleitet | `cookActive`, `cookStateDE`, `cloudState`, `dataAge`, `targetDelta`, `remainingTime`, `estimatedFinish`, `cookStartedAt` |
+
+## Zustands- und Ereignislogik
+
+| Situation | Anzeige / Verhalten |
+| --- | --- |
+| verbunden, kein Cook | aktuelle Temperaturen und `Cloud: online` |
+| gestartet, API-State `Configured`, `elapsedSeconds > 0` | `cookActive = 1`, Anzeige `läuft` |
+| aktiver Cook, Daten älter als 180 s | rote Stale-Warnbox und einmalige Logmeldung |
+| Wiederverbindung | automatische Rückkehr zu `Cloud: online` |
+| Cook-Block verschwindet nach aktivem Cook | einmalige Abschlussmeldung |
+| getrennt, kein aktiver Cook | neutrale Meldung ohne veraltete Temperaturen |
+
+Pro Cook-ID werden höchstens folgende Ereignisse protokolliert:
+
+- höchstens 5 °C bis zur Zieltemperatur
+- `Ready For Resting`
+- `Finished` oder das bestätigte Verschwinden des aktiven Cook-Blocks
+- `OVERCOOK!`
+- Messwerte länger als 180 Sekunden veraltet
+
+## Validierungsstand
+
+Live mit einem MEATER Pro und HTTPMOD 4.2.0 geprüft:
+
+- Login, JWT-Erneuerung und 60-Sekunden-Polling
+- Cook-Start trotz API-State `Configured`
+- Active-Cook-Merker und Wiederholungssperren
+- aktive Verbindung → stale → Wiederverbindung
+- genau eine Stale-Meldung während des Test-Cooks
+- genau eine Abschlussmeldung nach dem Test-Cook
+- neutraler Offline-Zustand ohne alte Temperaturen
+- keine Einträge für `MeaterCloud` in DbLog
+
+Noch nicht gezielt live beobachtet wurden die Ereignisse bei 5 °C
+Restdifferenz, `Ready For Resting` und `OVERCOOK!`. Sie sollten während eines
+normalen Garvorgangs validiert und nicht künstlich provoziert werden.
+
+## Fehlerdiagnose
+
+| Symptom | Prüfpunkte |
+| --- | --- |
+| HTTP 401 / `auth_error` | lokale Keys, Login-Antwort, `sid1IdJSON`, erneute Anmeldung |
+| HTTP 429 / `rate_limited` | Pollingintervall und weitere Clients desselben Kontos |
+| HTTP 5xx / `cloud_error` | MEATER-Cloud; alte Daten nicht als aktuell interpretieren |
+| Gerät fehlt | Bluetooth- und Cloud-Verbindung der App, Konto, einmalig abgeschlossener Cloud-Cook |
+| `stale` bei aktivem Cook | App-/Block-Verbindung und Fortschritt von `updatedAt` |
+| kein Cook vor App-Start | erwartetes Verhalten; die API liefert noch keinen Cook-Block |
+
+## Sicherheit und Datenschutz
+
+- Das Repository enthält keine E-Mail-Adresse, kein Passwort, kein JWT, keine
+  reale Geräte-ID und keine Cook-ID.
+- `storeKeyValue` wird nur für E-Mail-Adresse und Passwort verwendet.
+- Die Geräte-ID steht lokal in der HTTPMOD-URL und darf nicht veröffentlicht
+  werden.
+- `DbLogExclude .*` ist für HTTPMOD und DOIF gesetzt.
+- Das Projekt ist rein lesend und darf nicht zur sicherheitskritischen
+  Grill-/Ofensteuerung erweitert werden.
+
+## Lizenz
+
+Veröffentlicht unter der [MIT-Lizenz](LICENSE). MEATER und MEATER Pro sind
+Marken ihrer jeweiligen Rechteinhaber. Dieses Projekt ist nicht mit Apption
+Labs verbunden oder von Apption Labs unterstützt.
 
 ## Quellen
 
-- [Offizielle MEATER Cloud API](https://github.com/apption-labs/meater-cloud-public-rest-api)
-- [FHEM HTTPMOD-Dokumentation](https://wiki.fhem.de/wiki/HTTPMOD)
-- [FHEM DOIF-Referenz](https://fhem.de/commandref_DE.html#DOIF)
+- [MEATER Cloud REST API](https://github.com/apption-labs/meater-cloud-public-rest-api)
+- [FHEM HTTPMOD](https://wiki.fhem.de/wiki/HTTPMOD)
+- [FHEM DOIF](https://fhem.de/commandref_DE.html#DOIF)
